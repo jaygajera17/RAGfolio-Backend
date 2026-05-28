@@ -3,7 +3,7 @@
 1. Create a virtual environment and activate it:
   - ```python -m venv .venv```
   -  for linux ```source .venv/bin/activate```
-   -  for Windows: ```.venv\Scripts\activate```
+   -  for Windows: ```source .venv\Scripts\activate```
 
 2. Install the required dependencies:
    pip install -r requirements.txt

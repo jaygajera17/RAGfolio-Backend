@@ -5,12 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import settings
-from app.core.logger import setup_logger
+from app.core.logger import get_logger
 from app.db.database import connect_db, disconnect_db
 from app.exceptions.handlers import register_exception_handlers
 from app.middleware.request_logger import LoggingMiddleware
 from app.routers.router import api_router
 
+logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,7 +22,6 @@ async def lifespan(app: FastAPI):
         await disconnect_db()
 
 
-setup_logger(settings.LOG_LEVEL)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -46,6 +46,7 @@ if settings.ALLOWED_HOSTS:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 
 register_exception_handlers(app)
+# test_embedding()
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
@@ -60,3 +61,4 @@ async def root():
 @app.get("/health", tags=["health"])
 async def health_check():
     return {"status": "ok"}
+

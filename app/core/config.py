@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     ALLOWED_ORIGINS: list[str] = Field(default_factory=list)
     ALLOWED_HOSTS: list[str] = Field(default_factory=list)
-
+    GOOGLE_API_KEY:str
+    QDRANT_API_KEY:str
+    QDRANT_HOST:str
+    EMBEDDING_DIM: int = 768
+    
     @property
     def is_dev(self) -> bool:
         return self.DEBUG or self.ENV.lower() == "development"

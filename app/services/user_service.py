@@ -1,4 +1,4 @@
-from app.schemas.user_schema import User
+from app.schemas.rag_schema import User
 
 
 class UserService:
