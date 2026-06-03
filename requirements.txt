@@ -90,7 +90,6 @@ pymupdf4llm==0.1.9
 pytest==8.4.1
 python-dotenv==1.2.2
 python-multipart==0.0.29
-pywin32==311
 PyYAML==6.0.3
 qdrant-client==1.18.0
 rapidocr-onnxruntime==1.2.3
