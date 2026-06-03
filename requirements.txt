@@ -31,3 +31,4 @@ typer==0.25.1
 uuid_utils==0.16.0
 uvicorn==0.35.0
 pydantic-settings==2.14.1
+pydantic==2.13.4
