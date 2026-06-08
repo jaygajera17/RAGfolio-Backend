@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 from app.rag.pipeline import injest_pdf
-from app.schemas.rag_schema import SearchQuery
+from app.schemas.rag_schema import SearchQuery,AskRequest
 from app.rag.pipeline import query_rag
-
+from app.rag.retrival import RetrivalService
 
 router = APIRouter(tags=["rag"])
 
@@ -22,5 +22,10 @@ async def query_rag_pipeline(request:SearchQuery):
     )
     return {"query": request.query, "results": results}
     
-    
-
+@router.post("/ask")
+async def ask_endpoint(request : AskRequest):
+    try:
+        retriver = RetrivalService()
+        return await retriver.query_rag_with_answer(request.query)
+    except Exception as e:
+        return {"error": str(e)}

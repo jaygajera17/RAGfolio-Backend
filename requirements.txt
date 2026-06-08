@@ -35,3 +35,6 @@ pydantic==2.13.4
 langchain-text-splitters==1.1.2
 google-genai==2.7.0
 langchain-google-genai==4.2.4
+google==3.0.0
+langsmith==0.8.9
+

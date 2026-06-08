@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from typing import List
 from uuid import uuid4
 
@@ -91,7 +90,6 @@ class QdrantService:
         """
         # 1. Embed all chunk texts
         texts = [chunk.page_content for chunk in chunks]
-        titles = [chunk.metadata["section_title"] for chunk in chunks]
         vectors = await self.embedding_svc.embed_texts(texts)  # List[List[float]]
 
         # 2. Build PointStructs with LangChain-compatible payload
