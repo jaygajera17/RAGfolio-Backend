@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     LANGSMITH_API_KEY: str = ""
     LANGSMITH_PROJECT: str = "default"
 
+    # Auth0 settings
+    AUTH0_DOMAIN: str
+    AUTH0_CLIENT_ID: str
+    AUTH0_CLIENT_SECRET: str
+    SESSION_SECRET: str 
+    APP_BASE_URL: str
+    AUTH0_AUDIENCE: str
+
     @property
     def is_dev(self) -> bool:
         return self.DEBUG or self.ENV.lower() == "development"
@@ -47,4 +55,4 @@ os.environ.setdefault("LANGSMITH_TRACING", settings.LANGSMITH_TRACING)
 os.environ.setdefault("LANGSMITH_ENDPOINT", settings.LANGSMITH_ENDPOINT)
 os.environ.setdefault("LANGSMITH_PROJECT", settings.LANGSMITH_PROJECT)
 if settings.LANGSMITH_API_KEY:
-    os.environ.setdefault("LANGSMITH_API_KEY", settings.LANGSMITH_API_KEY)
+    os.environ.setdefault("LANGSMITH_API_KEY", settings.LANGSMITH_API_KEY)
