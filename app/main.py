@@ -10,7 +10,7 @@ from app.db.database import connect_db, disconnect_db
 from app.exceptions.handlers import register_exception_handlers
 from app.middleware.request_logger import LoggingMiddleware
 from app.routers.router import api_router
-from auth0_fastapi.auth.auth_client import AuthClient
+
 
 logger = get_logger(__name__)
 
@@ -35,7 +35,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.state.auth_client = AuthClient 
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET)
 app.add_middleware(LoggingMiddleware)
 
