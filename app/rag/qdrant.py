@@ -11,11 +11,12 @@ from app.core.config import settings
 from app.core.logger import get_logger
 from app.rag.embedding import EmbeddingService, EMBEDDING_DIM
 
+
 logger = get_logger(__name__)
 
 
 class QdrantService:
-    def __init__(self, collection_name: str = "documents"):
+    def __init__(self, collection_name: str = settings.DEFAULT_COLLECTION):
         self.collection_name = collection_name
         self.embedding_svc = EmbeddingService()
 
@@ -65,6 +66,9 @@ class QdrantService:
             ("metadata.source",        PayloadSchemaType.KEYWORD),
             ("metadata.region_type",   PayloadSchemaType.KEYWORD),
             ("metadata.page_num",      PayloadSchemaType.INTEGER),
+            ("metadata.month_year",    PayloadSchemaType.KEYWORD),
+            ("metadata.table_type",    PayloadSchemaType.KEYWORD),
+            ("metadata.fund_name",     PayloadSchemaType.KEYWORD),
         ]
 
         for field, schema_type in indexes:
