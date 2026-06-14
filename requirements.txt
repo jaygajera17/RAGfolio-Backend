@@ -6,7 +6,7 @@ SQLAlchemy==2.0.50
 charset-normalizer==3.4.7
 detect-installer==0.1.0
 dnspython==2.8.0
-fastapi==0.116.1
+fastapi>=0.115.11,<0.116.0
 fastar==0.11.0
 flatbuffers==25.12.19
 google-auth==2.53.0
@@ -29,7 +29,7 @@ rich-toolkit==0.19.10
 rignore==0.7.6
 typer==0.25.1
 uuid_utils==0.16.0
-uvicorn==0.35.0
+uvicorn>=0.34.0,<0.35.0
 pydantic-settings==2.14.1
 pydantic==2.13.4
 langchain-text-splitters==1.1.2
