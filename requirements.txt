@@ -38,3 +38,4 @@ langchain-google-genai==4.2.4
 google==3.0.0
 langsmith==0.8.9
 auth0-fastapi-api==1.0.0b5
+itsdangerous
