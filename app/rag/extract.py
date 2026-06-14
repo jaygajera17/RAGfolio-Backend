@@ -46,7 +46,7 @@ MIN_CHART_ELEMENTS = 5  # min elements form a chart , exclude single dividing li
 CHART_TEXT_MAX_PT = 6.5  # axis labels like 4% on y-axis are part of chart
 HEADER_LIMIT_PT = 150.0
 FOOTER_LIMIT_PT = 750.0
-CHART_RENDER_DPI = 60
+CHART_RENDER_DPI = 100
 
 # ── Embedded-image tunables ──
 MIN_IMAGE_AREA = 100.0 * 100.0
@@ -64,7 +64,11 @@ EXCLUDE_BBOXES = [
 
 # ── Default paths ──
 BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_PDF_PATH = BASE_DIR / "static" / "icici.pdf"
+DEFAULT_PDF_PATH = BASE_DIR / "static" / "icici-15-20.pdf"
+
+# ── PDF metadata for temporal filtering ──
+# Change this string when ingesting a new month's PDF.
+MONTH_YEAR = "may_2026"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -91,6 +95,7 @@ class PDFConfig:
     exclude_bboxes: List[Tuple[float, float, float, float]] = field(
         default_factory=lambda: list(EXCLUDE_BBOXES)
     )
+    month_year: str = MONTH_YEAR
 
 
 @dataclass
@@ -133,11 +138,17 @@ async def load_and_chunk_pdf(
     max_chunk_tokens: int = MAX_CHUNK_TOKENS,
     fallback_chunk_overlap: int = FALLBACK_CHUNK_OVERLAP,
     exclude_bboxes: List[Tuple[float, float, float, float]] | None = None,
-) -> Tuple[List[Document], List[Document]]:
+    month_year: str = MONTH_YEAR,
+) -> Tuple[List[Document], List[Document], List[Document]]:
     """
-    Extract section-aware text chunks **and** chart/image documents from a PDF.
+    Extract section-aware text chunks, structured table documents, and
+    chart/image documents from a PDF.
+
+    Returns a 3-tuple: (text_chunks, table_docs, image_docs)
 
     All thresholds can be dynamically customized via argument overrides.
+    The ``month_year`` argument stamps temporal metadata on every chunk
+    (e.g. ``"may_2026"``); change it when ingesting a new month's PDF.
     """
     resolved_path = Path(pdf_path) if pdf_path else DEFAULT_PDF_PATH
     if not resolved_path.is_file():
@@ -160,15 +171,16 @@ async def load_and_chunk_pdf(
         max_chunk_tokens=max_chunk_tokens,
         fallback_chunk_overlap=fallback_chunk_overlap,
         exclude_bboxes=exclude_bboxes if exclude_bboxes is not None else list(EXCLUDE_BBOXES),
+        month_year=month_year,
     )
 
     # Heavy I/O → run in a worker thread
-    text_chunks, image_docs = await asyncio.to_thread(
+    text_chunks, table_docs, image_docs = await asyncio.to_thread(
         _extract_all,
         resolved_path,
         cfg,
     )
-    return text_chunks, image_docs
+    return text_chunks, table_docs, image_docs
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -178,37 +190,82 @@ async def load_and_chunk_pdf(
 def _extract_all(
     pdf_path: Path,
     cfg: PDFConfig,
-) -> Tuple[List[Document], List[Document]]:
-    """Synchronous workhorse that does all fitz I/O."""
+) -> Tuple[List[Document], List[Document], List[Document]]:
+    """Synchronous workhorse that does all fitz I/O.
+
+    Returns a 3-tuple: (text_chunks, table_docs, image_docs)
+    """
 
     doc = fitz.open(str(pdf_path))
     all_text_blocks: List[TextBlock] = []
     all_chart_regions: List[ChartRegion] = []
     seen_image_xrefs: set[int] = set()
     image_docs: List[Document] = []
+    all_table_docs: List[Document] = []
+
+    # Track fund name across pages (portfolio overflow pages inherit the previous fund)
+    current_fund_name: str = ""
 
     for page_num in range(len(doc)):
         page = doc[page_num]
 
-        # ── 1. Detect chart regions from vector drawings ──
+        # ── 1a. Detect chart regions from vector drawings ──
         chart_regions = _detect_chart_regions(page, page_num, cfg)
         all_chart_regions.extend(chart_regions)
 
-        # ── 2. Classify text blocks, filtering out chart-interior text ──
+        # ── 1b. Extract structured tables from fund card pages ──
+        table_docs, detected_fund_name, table_bboxes = _extract_tables(
+            page, page_num, pdf_path, cfg, current_fund_name
+        )
+        if detected_fund_name:
+            current_fund_name = detected_fund_name
+        all_table_docs.extend(table_docs)
+
+        # ── 1b-post. Remove chart regions that are mostly covered by table areas ──
+        # Fund card pages have many vector elements (table borders, boxes) that
+        # the chart detector clusters as a single large region. Filter those out.
+        chart_regions = _filter_chart_regions_by_tables(chart_regions, table_bboxes)
+
+        # ── 1c. Extract portfolio holdings from text blocks ──
+        portfolio_docs = _extract_portfolio_section(
+            page, page_num, pdf_path, cfg, current_fund_name
+        )
+        all_table_docs.extend(portfolio_docs)
+
+        # ── 1d. Extract scheme details ──
+        scheme_docs = _extract_scheme_details(
+            page, page_num, pdf_path, cfg, current_fund_name
+        )
+        all_table_docs.extend(scheme_docs)
+
+        # ── 1e. Extract quantitative indicators ──
+        quant_docs = _extract_quantitative_indicators(
+            page, page_num, pdf_path, cfg, current_fund_name
+        )
+        all_table_docs.extend(quant_docs)
+
+        # ── 2. Classify text blocks, filtering out chart-interior text
+        #       and already-extracted table regions ──
+        exclusion_bboxes = [cr.bbox for cr in chart_regions] + table_bboxes
         text_blocks = _classify_text_blocks(
             page, page_num,
-            chart_bboxes=[cr.bbox for cr in chart_regions],
+            chart_bboxes=exclusion_bboxes,
             cfg=cfg,
         )
         # Sort text blocks: primarily by y0 (top-to-bottom), secondarily by x0 (left-to-right)
         text_blocks.sort(key=lambda b: (b.bbox[1], b.bbox[0]))
         all_text_blocks.extend(text_blocks)
 
-        # ── 3. Render chart regions as PNG images ──
+        # ── 3. Render chart regions — text-rich regions become text docs, true charts become images ──
         for idx, cr in enumerate(chart_regions):
-            img_doc = _render_region_to_document(page, cr, idx, pdf_path, cfg)
-            if img_doc:
-                image_docs.append(img_doc)
+            region_doc = _render_region_to_document(page, cr, idx, pdf_path, cfg, current_fund_name)
+            if region_doc is None:
+                continue
+            if region_doc.metadata.get("modality") == "text":
+                # Summary box extracted as text — route to structured table path
+                all_table_docs.append(region_doc)
+            else:
+                image_docs.append(region_doc)
 
         # ── 4. Extract meaningful embedded raster images ──
         page_image_docs = _extract_embedded_images(
@@ -224,16 +281,524 @@ def _extract_all(
     # ── 5. Accumulate text blocks into section-aware chunks ──
     text_chunks = _build_section_chunks(all_text_blocks, pdf_path, cfg)
 
+    # ── 6. Stamp month_year on ALL chunks ──
+    for chunk in text_chunks + all_table_docs + image_docs:
+        chunk.metadata["month_year"] = cfg.month_year
+
     logger.info(
         f"Extraction complete: {len(text_chunks)} text chunks, "
+        f"{len(all_table_docs)} table docs, "
         f"{len(image_docs)} image documents from {pdf_path.name}"
     )
-    return text_chunks, image_docs
+    return text_chunks, all_table_docs, image_docs
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  1. Chart / drawing-cluster detection
+#  1. Structured table & section extraction (fund card pages)
 # ──────────────────────────────────────────────────────────────────────
+
+# Keywords that identify the low-value Riskometer table — we skip it.
+_RISKOMETER_KEYWORDS = {"riskometer", "risk", "benchmark", "moderate", "low", "high", "very high"}
+
+# Regex to detect portfolio rows: "Company Name  9.25%" or "Company  Rating  9.25%"
+_PORTFOLIO_ROW_RE = re.compile(r"^(.+?)\s{2,}(\d+\.\d+%)\s*$")
+# Broader pattern for lines that include a rating field between name and %
+_PORTFOLIO_ROW_RATING_RE = re.compile(r"^(.+?)\s{2,}(\w+)\s{2,}(\d+\.\d+%)\s*$")
+
+
+def _get_page_fund_name(page: fitz.Page, cfg: PDFConfig) -> str:
+    """
+    Extract the fund name from the page title text block (largest font on page,
+    typically 17pt on fund card pages).  Returns empty string if not found.
+    """
+    raw = page.get_text("dict")
+    best_size = 0.0
+    best_text = ""
+    for block in raw.get("blocks", []):
+        if block["type"] != 0:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                # Fund names are typically between 13–22pt
+                if 13.0 <= span["size"] <= 22.0 and span["text"].strip():
+                    if span["size"] > best_size:
+                        best_size = span["size"]
+                        best_text = span["text"].strip()
+    return best_text
+
+
+def _is_riskometer_table(table_text: str) -> bool:
+    """Return True if the extracted table text looks like the boilerplate Riskometer."""
+    lower = table_text.lower()
+    hits = sum(1 for kw in _RISKOMETER_KEYWORDS if kw in lower)
+    return hits >= 3
+
+
+def _extract_tables(
+    page: fitz.Page,
+    page_num: int,
+    pdf_path: Path,
+    cfg: PDFConfig,
+    current_fund_name: str,
+) -> Tuple[List[Document], str, List[fitz.Rect]]:
+    """
+    Use ``page.find_tables()`` to extract structured tables from fund card pages.
+
+    Returns:
+        table_docs      – list of Documents (one per valid table)
+        detected_fund   – fund name found on this page (empty str if none)
+        table_bboxes    – bounding boxes of all detected tables (for exclusion)
+    """
+    table_docs: List[Document] = []
+    table_bboxes: List[fitz.Rect] = []
+
+    detected_fund = _get_page_fund_name(page, cfg)
+    fund_name = detected_fund or current_fund_name
+
+    try:
+        tabs = page.find_tables()
+    except Exception as e:
+        logger.debug(f"Page {page_num}: find_tables() failed: {e}")
+        return table_docs, detected_fund, table_bboxes
+
+    if not tabs or not tabs.tables:
+        return table_docs, detected_fund, table_bboxes
+
+    for tab in tabs.tables:
+        # Record bbox for exclusion from text classification and chart detection
+        table_bboxes.append(fitz.Rect(tab.bbox))
+
+        # Extract raw cell data
+        try:
+            data = tab.extract()
+        except Exception as e:
+            logger.debug(f"Page {page_num}: table.extract() failed: {e}")
+            continue
+
+        if not data:
+            continue
+
+        # Flatten all text for heuristic checks
+        flat_text = " ".join(
+            str(cell) for row in data for cell in row if cell is not None
+        )
+
+        # Skip Riskometer boilerplate
+        if _is_riskometer_table(flat_text):
+            continue
+
+        # Determine number of rows / cols
+        num_rows = len(data)
+        num_cols = max(len(row) for row in data) if data else 0
+
+        if num_rows < 4 or num_cols < 4:
+            logger.debug(
+                f"Page {page_num}: Skipping small table ({num_rows}r × {num_cols}c)"
+            )
+            continue
+
+        # Normalise cells: strip whitespace, flatten inner newlines, replace None
+        cleaned: List[List[str]] = []
+        for row in data:
+            cleaned.append([
+                re.sub(r"\s+", " ", str(c)).strip() if c is not None else ""
+                for c in row
+            ])
+
+        # Detect Returns table by keywords in first two rows
+        header_text = " ".join(
+            cell for row in cleaned[:2] for cell in row
+        ).lower()
+        is_returns_table = any(
+            kw in header_text
+            for kw in ("particulars", "cagr", "1 year", "3 year", "since inception")
+        )
+
+        if is_returns_table:
+            # The returns table header spans 3 visual rows in the PDF, causing
+            # find_tables() to produce garbled merged-cell content for column labels.
+            # We bypass the extracted headers and use hardcoded ICICI-standard labels.
+            _RETURNS_COLS = [
+                "Particulars",
+                "1Y CAGR(%)", "1Y Value(Rs.10k)",
+                "3Y CAGR(%)", "3Y Value(Rs.10k)",
+                "5Y CAGR(%)", "5Y Value(Rs.10k)",
+                "SI CAGR(%)", "SI Value",
+            ]
+
+            # Data rows start after the two header rows (period labels + sub-labels).
+            # Skip any trailing rows that look like NAV-only rows (first cell starts
+            # with "NAV") or are entirely empty.
+            data_rows = [
+                row for row in (cleaned[2:] if len(cleaned) > 2 else cleaned[1:])
+                if row and any(c for c in row)
+                and not re.match(r"^nav\b", (row[0] or "").lower())
+            ]
+
+            # Truncate each row to the number of known columns
+            n_cols = len(_RETURNS_COLS)
+            lines = [f"Fund: {fund_name}", "Returns Table", ""]
+            lines.append("| " + " | ".join(_RETURNS_COLS) + " |")
+            lines.append("| " + " | ".join(["---"] * n_cols) + " |")
+            for row in data_rows:
+                # Pad or truncate row to exactly n_cols
+                padded = (row + [""] * n_cols)[:n_cols]
+                lines.append("| " + " | ".join(padded) + " |")
+            page_content = "\n".join(lines)
+            table_type = "returns"
+        else:
+            # Generic structured table
+            md_lines = []
+            for i, row in enumerate(cleaned):
+                md_lines.append("| " + " | ".join(row) + " |")
+                if i == 0:
+                    md_lines.append("| " + " | ".join(["---"] * len(row)) + " |")
+            page_content = "\n".join(md_lines)
+            table_type = "generic"
+
+        doc = Document(
+            page_content=page_content,
+            metadata={
+                "source": str(pdf_path),
+                "source_file": pdf_path.name,
+                "page_num": page_num,
+                "modality": "text",
+                "table_type": table_type,
+                "fund_name": fund_name,
+            },
+        )
+        table_docs.append(doc)
+        logger.debug(
+            f"Page {page_num}: Extracted {table_type!r} table "
+            f"({num_rows}r × {num_cols}c) for fund '{fund_name}'"
+        )
+
+    return table_docs, detected_fund, table_bboxes
+
+
+
+def _extract_portfolio_section(
+    page: fitz.Page,
+    page_num: int,
+    pdf_path: Path,
+    cfg: PDFConfig,
+    fund_name: str,
+) -> List[Document]:
+    """
+    Parse Portfolio holdings using word-level extraction with y-coordinate grouping.
+
+    Fund card pages use a two-column layout where company names (left column) and
+    their percentages (right column) appear in *separate* text blocks at the same
+    visual y-position.  We use ``get_text("words")`` and group words by approximate
+    y-coordinate (±Y_TOL pt) so left-column and right-column content on the same
+    visual row get reconstructed into one line before regex matching.
+    """
+    Y_TOL = 1.5  # tight tolerance so adjacent column headers at similar y don't merge
+
+    # ── Collect all words with position ──
+    words = page.get_text("words")  # list of (x0,y0,x1,y1, word, block_no, line_no, word_no)
+    if not words:
+        return []
+
+    # ── Group words into visual rows by y-midpoint ──
+    rows: dict[int, List[Tuple[float, str]]] = {}  # bucket_key -> [(x0, word), ...]
+    for w in words:
+        x0, y0, x1, y1, word, *_ = w
+        y_mid = (y0 + y1) / 2
+        # Find existing bucket within tolerance
+        bucket = None
+        for key in rows:
+            if abs(key / 10.0 - y_mid) <= Y_TOL:
+                bucket = key
+                break
+        if bucket is None:
+            bucket = int(y_mid * 10)
+        rows.setdefault(bucket, []).append((x0, word))
+
+    # ── Reconstruct visual lines sorted by y then x ──
+    visual_lines: List[Tuple[float, str]] = []  # (y_bucket, line_text)
+    for key in sorted(rows):
+        word_list = sorted(rows[key], key=lambda t: t[0])  # sort left→right by x
+        line_text = " ".join(w for _, w in word_list).strip()
+        visual_lines.append((key / 10.0, line_text))
+
+    # ── Find portfolio section start ──
+    # Match specifically "Portfolio as on" to avoid matching "Quantitative" section
+    portfolio_start_idx = None
+    for i, (_, text) in enumerate(visual_lines):
+        if re.search(r"portfolio\s+as\s+on", text, re.IGNORECASE):
+            portfolio_start_idx = i
+            break
+
+    if portfolio_start_idx is None:
+        return []
+
+    header_line = visual_lines[portfolio_start_idx][1]
+    holdings: List[str] = []
+
+    # Regex patterns applied to full reconstructed visual rows
+    pct_re = re.compile(r"(\d+\.\d+)%")
+    holding_re = re.compile(r"^(.+?)\s+(\d+\.\d+)%\s*$")
+
+    for _, text in visual_lines[portfolio_start_idx + 1:]:
+        text = text.strip()
+        if not text:
+            continue
+        # Stop at next major section
+        if re.search(r"(scheme details|quantitative indicator|riskometer|disclaimer)", text, re.IGNORECASE):
+            break
+
+        m = holding_re.match(text)
+        if m:
+            name = m.group(1).strip().lstrip("•· ")  # strip bullet chars
+            pct = m.group(2) + "%"
+            holdings.append(f"- {name}: {pct}")
+        elif pct_re.search(text):
+            # Category / sub-total line, e.g. "Equity Shares 97.69%"
+            clean = text.lstrip("•· ")
+            holdings.append(f"  {clean}")
+
+    if not holdings:
+        return []
+
+    prefix = f"Fund: {fund_name}\n" if fund_name else ""
+    page_content = f"{prefix}{header_line}\n\n" + "\n".join(holdings)
+
+    doc = Document(
+        page_content=page_content,
+        metadata={
+            "source": str(pdf_path),
+            "source_file": pdf_path.name,
+            "page_num": page_num,
+            "modality": "text",
+            "table_type": "portfolio",
+            "fund_name": fund_name,
+        },
+    )
+    logger.debug(
+        f"Page {page_num}: Extracted portfolio section "
+        f"({len(holdings)} holdings) for fund '{fund_name}'"
+    )
+    return [doc]
+
+# ──────────────────────────────────────────────────────────────────────
+#  2. Chart / drawing-cluster detection
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _filter_chart_regions_by_tables(
+    chart_regions: List[ChartRegion],
+    table_bboxes: List[fitz.Rect],
+    overlap_threshold: float = 0.5,
+) -> List[ChartRegion]:
+    """
+    Remove chart regions that are predominantly made of table borders.
+
+    A chart region is dropped if EITHER:
+    - More than ``overlap_threshold`` of the chart's OWN area is covered by a table, OR
+    - More than ``overlap_threshold`` of any table's area falls inside the chart region
+      (i.e., the chart bbox encloses a table — its vector drawings are the table borders).
+    """
+    if not table_bboxes:
+        return chart_regions
+
+    filtered: List[ChartRegion] = []
+    for cr in chart_regions:
+        cr_area = cr.bbox.width * cr.bbox.height
+        if cr_area <= 0:
+            continue
+        should_drop = False
+        for tb in table_bboxes:
+            tb_area = tb.width * tb.height
+            inter = cr.bbox & tb
+            if inter.is_empty:
+                continue
+            inter_area = inter.width * inter.height
+            if inter_area / cr_area > overlap_threshold:
+                should_drop = True
+                break
+            if tb_area > 0 and inter_area / tb_area > overlap_threshold:
+                should_drop = True
+                break
+        if not should_drop:
+            filtered.append(cr)
+        else:
+            logger.debug(f"Dropping chart region bbox={cr.bbox} (page {cr.page_num}): table overlap")
+    return filtered
+
+
+
+
+def _extract_scheme_details(
+    page: fitz.Page,
+    page_num: int,
+    pdf_path: Path,
+    cfg: PDFConfig,
+    fund_name: str,
+) -> List[Document]:
+
+    """
+    Parse the Scheme Details key-value section between the Returns table and Portfolio.
+    Detects the section by the header \"Scheme Details\".
+    """
+    raw = page.get_text("dict")
+    lines_with_pos: List[Tuple[float, float, str]] = []
+    for block in raw.get("blocks", []):
+        if block["type"] != 0:
+            continue
+        for line in block["lines"]:
+            parts = [sp["text"] for sp in line["spans"]]
+            text = " ".join(parts).strip()
+            if text:
+                lines_with_pos.append((line["bbox"][1], line["bbox"][0], text))
+
+    lines_with_pos.sort(key=lambda t: (t[0], t[1]))
+
+    # Find "Scheme Details" section header
+    start_idx = None
+    for i, (_, _, text) in enumerate(lines_with_pos):
+        if re.search(r"scheme\s+details", text, re.IGNORECASE):
+            start_idx = i
+            break
+
+    if start_idx is None:
+        return []
+
+    kv_lines: List[str] = []
+    for _, _, text in lines_with_pos[start_idx + 1:]:
+        # Stop at next major section
+        if re.search(r"(portfolio|quantitative indicator|riskometer)", text, re.IGNORECASE):
+            break
+        kv_lines.append(text)
+
+    if not kv_lines:
+        return []
+
+    prefix = f"Fund: {fund_name}\nScheme Details\n\n" if fund_name else "Scheme Details\n\n"
+    page_content = prefix + "\n".join(kv_lines)
+
+    doc = Document(
+        page_content=page_content,
+        metadata={
+            "source": str(pdf_path),
+            "source_file": pdf_path.name,
+            "page_num": page_num,
+            "modality": "text",
+            "table_type": "scheme_details",
+            "fund_name": fund_name,
+        },
+    )
+    return [doc]
+
+
+def _extract_quantitative_indicators(
+    page: fitz.Page,
+    page_num: int,
+    pdf_path: Path,
+    cfg: PDFConfig,
+    fund_name: str,
+) -> List[Document]:
+    """
+    Extract Quantitative Indicators using targeted field-name search.
+
+    Instead of capturing all text between two headers (which bleeds in portfolio
+    data on two-column pages), we scan the entire page for the 5 known indicator
+    field names and capture only their values.
+    """
+    # Known indicator labels and their regex patterns (value follows the label on same/next line)
+    INDICATOR_PATTERNS = [
+        ("Average Dividend Yield",     re.compile(r"Average\s+Dividend\s+Yield\s*[:\-]?\s*([\d.]+)", re.IGNORECASE)),
+        ("Portfolio Turnover Ratio",   re.compile(r"Portfolio\s+Turnover\s+Ratio\s*[:\-]?\s*([\d.]+\s*(?:times?|x)?)", re.IGNORECASE)),
+        ("Standard Deviation",         re.compile(r"Std(?:andard)?\s+Dev(?:iation)?\s*[:\-]?\s*([\d.]+%?)", re.IGNORECASE)),
+        ("Sharpe Ratio",               re.compile(r"Sharpe\s+Ratio\s*[:\-]?\s*(-?[\d.]+)", re.IGNORECASE)),
+        ("Portfolio Beta",             re.compile(r"Portfolio\s+Beta\s*[:\-]?\s*([\d.]+)", re.IGNORECASE)),
+    ]
+
+    # Get full page text (single string) — easiest to search across line boundaries
+    page_text = page.get_text("text")
+
+    # Verify the section exists on this page at all
+    if not re.search(r"quantitative\s+indicator", page_text, re.IGNORECASE):
+        return []
+
+    found: List[str] = []
+    for label, pattern in INDICATOR_PATTERNS:
+        m = pattern.search(page_text)
+        if m:
+            found.append(f"{label}: {m.group(1).strip()}")
+
+    if not found:
+        return []
+
+    prefix = f"Fund: {fund_name}\nQuantitative Indicators\n\n" if fund_name else "Quantitative Indicators\n\n"
+    page_content = prefix + "\n".join(found)
+
+    doc = Document(
+        page_content=page_content,
+        metadata={
+            "source": str(pdf_path),
+            "source_file": pdf_path.name,
+            "page_num": page_num,
+            "modality": "text",
+            "table_type": "quant_indicators",
+            "fund_name": fund_name,
+        },
+    )
+    logger.debug(f"Page {page_num}: Extracted {len(found)} quantitative indicators for fund '{fund_name}'")
+    return [doc]
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  2. Chart / drawing-cluster detection
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _filter_chart_regions_by_tables(
+    chart_regions: List[ChartRegion],
+    table_bboxes: List[fitz.Rect],
+    overlap_threshold: float = 0.5,
+) -> List[ChartRegion]:
+    """
+    Remove chart regions that are predominantly made of table borders.
+
+    A chart region is dropped if EITHER:
+    - More than ``overlap_threshold`` of the chart's OWN area is covered by a table, OR
+    - More than ``overlap_threshold`` of any table's area is covered by the chart region
+      (i.e., the chart fully encloses a table — it is the table's border drawing).
+    """
+    if not table_bboxes:
+        return chart_regions
+
+    filtered: List[ChartRegion] = []
+    for cr in chart_regions:
+        cr_area = cr.bbox.width * cr.bbox.height
+        if cr_area <= 0:
+            continue
+        should_drop = False
+        for tb in table_bboxes:
+            tb_area = tb.width * tb.height
+            inter = cr.bbox & tb
+            if inter.is_empty:
+                continue
+            inter_area = inter.width * inter.height
+            # Drop if most of the chart is inside a table (chart is a table decoration)
+            if inter_area / cr_area > overlap_threshold:
+                should_drop = True
+                break
+            # Drop if the chart contains most of a table (chart bbox wraps a table)
+            if tb_area > 0 and inter_area / tb_area > overlap_threshold:
+                should_drop = True
+                break
+        if not should_drop:
+            filtered.append(cr)
+        else:
+            logger.debug(
+                f"Dropping chart region bbox={cr.bbox} (page {cr.page_num}): "
+                f"overlaps with table region"
+            )
+    return filtered
+
 
 def _detect_chart_regions(
     page: fitz.Page,
@@ -540,6 +1105,20 @@ def _build_section_chunks(
             current_pages = set()
             return
 
+        # Skip chunks whose body is column-header boilerplate with no payload data.
+        # Two cases:
+        #  (a) Completely digit-free (pure labels, no values).
+        #  (b) Matches portfolio column-header pattern: a date line + label line only.
+        _no_digits = not re.search(r"\d", body)
+        _col_header_only = bool(re.fullmatch(
+            r"Portfolio as on .+?\n+Company/Issuer.+?",
+            body.strip(), re.DOTALL | re.IGNORECASE,
+        ))
+        if _no_digits or _col_header_only:
+            current_body_lines = []
+            current_pages = set()
+            return
+
         page_list = sorted(current_pages)
         meta_base = {
             "page_title": current_page_title,
@@ -587,7 +1166,10 @@ def _build_section_chunks(
             current_section = block.text
             continue
 
-        # body text
+        # body text — skip bare page-number lines (e.g. "15", "20")
+        stripped = block.text.strip()
+        if re.fullmatch(r"\d{1,3}", stripped):
+            continue
         current_body_lines.append(block.text)
         current_pages.add(block.page_num)
 
@@ -612,15 +1194,48 @@ def _render_region_to_document(
     index: int,
     pdf_path: Path,
     cfg: PDFConfig,
+    fund_name: str = "",
 ) -> Document | None:
     """
-    Rasterise a chart bounding-box to a high-res PNG and wrap in a
-    Document. Returns None if the clip rect is degenerate.
+    Convert a detected vector-drawing region into a Document.
+
+    Strategy (text-first):
+    1. Try to extract selectable text from the region's bounding box.
+       If the region contains substantial text (> 60 chars after stripping),
+       it is a *text-based visual element* (e.g. "Top 5 Holdings" summary box)
+       and we return a text Document so it lands in the text embedding pathway.
+    2. If text extraction is poor, fall back to rasterising the region as a
+       base64 PNG (genuine charts with axis labels, bar plots, etc.).
+
+    Returns None if the clip rect is degenerate.
     """
     clip = region.bbox & page.rect  # clamp to page
     if clip.is_empty:
         return None
 
+    # ── Step 1: attempt text extraction from the region ──
+    clipped_text = page.get_text("text", clip=clip).strip()
+    # Collapse excessive whitespace for a fair length check
+    clipped_text_clean = re.sub(r"\s+", " ", clipped_text)
+    if len(clipped_text_clean) > 60:
+        # Rich text region (summary box, holdings table, etc.) — store as text
+        prefix = f"Fund: {fund_name}\n" if fund_name else ""
+        return Document(
+            page_content=prefix + clipped_text,
+            metadata={
+                "page_num": region.page_num,
+                "source": str(pdf_path),
+                "source_file": pdf_path.name,
+                "modality": "text",
+                "table_type": "summary_box",
+                "fund_name": fund_name,
+                "bbox": [round(region.bbox.x0, 1), round(region.bbox.y0, 1),
+                         round(region.bbox.x1, 1), round(region.bbox.y1, 1)],
+                "region_type": "summary_box",
+            },
+        )
+
+    # ── Step 2: fall back to rasterising as PNG (genuine visual chart) ──
     # Add small padding so chart borders aren't cut off
     padding = 5
     clip = fitz.Rect(
@@ -649,6 +1264,7 @@ def _render_region_to_document(
             "modality": "image",
         },
     )
+
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -61,3 +61,8 @@ Traditional RAG relies on naive token-splitting (e.g., "split every 500 tokens")
 - `app/rag/embedding.py`: Manages the generation of unified multimodal embeddings via Google GenAI.
 - `app/rag/qdrant.py`: Interfaces with Qdrant for creating collections, indexing payloads, and parallel querying.
 - `app/rag/retrival.py`: Orchestrates the final retrieval step, combining text and images into a single prompt for the Gemini LLM.
+
+## Run
+
+Windows: .venv\Scripts\activate   
+         uvicorn app.main:app --reload 

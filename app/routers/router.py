@@ -21,5 +21,5 @@ auth0 = Auth0FastAPI(
 
 
 api_router = APIRouter()
-api_router.include_router(rag.router, prefix="/rag", tags=["rag"] , dependencies=[Depends(auth0.require_auth())])
+api_router.include_router(rag.router, prefix="/rag", tags=["rag"])
 

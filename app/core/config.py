@@ -25,12 +25,13 @@ class Settings(BaseSettings):
     QDRANT_API_KEY:str
     QDRANT_HOST:str
     EMBEDDING_DIM: int = 768
+    DEFAULT_COLLECTION: str = 'test'
 
     # LangSmith tracing
-    LANGSMITH_TRACING: str = "false"
-    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
-    LANGSMITH_API_KEY: str = ""
-    LANGSMITH_PROJECT: str = "default"
+    LANGSMITH_TRACING: str
+    LANGSMITH_ENDPOINT: str 
+    LANGSMITH_API_KEY: str 
+    LANGSMITH_PROJECT: str 
 
     # Auth0 settings
     AUTH0_DOMAIN: str
