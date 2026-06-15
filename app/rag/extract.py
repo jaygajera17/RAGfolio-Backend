@@ -64,7 +64,7 @@ EXCLUDE_BBOXES = [
 
 # ── Default paths ──
 BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_PDF_PATH = BASE_DIR / "static" / "icici-factsheet-may-2026.pdf"
+DEFAULT_PDF_PATH = BASE_DIR / "static" / "fund-factsheet-for-may-2026-51-97.pdf"
 
 # ── PDF metadata for temporal filtering ──
 # Change this string when ingesting a new month's PDF.
@@ -1197,45 +1197,12 @@ def _render_region_to_document(
     fund_name: str = "",
 ) -> Document | None:
     """
-    Convert a detected vector-drawing region into a Document.
-
-    Strategy (text-first):
-    1. Try to extract selectable text from the region's bounding box.
-       If the region contains substantial text (> 60 chars after stripping),
-       it is a *text-based visual element* (e.g. "Top 5 Holdings" summary box)
-       and we return a text Document so it lands in the text embedding pathway.
-    2. If text extraction is poor, fall back to rasterising the region as a
-       base64 PNG (genuine charts with axis labels, bar plots, etc.).
-
-    Returns None if the clip rect is degenerate.
+    Convert a detected vector-drawing region into a Document as a base64 PNG.
     """
     clip = region.bbox & page.rect  # clamp to page
     if clip.is_empty:
         return None
 
-    # ── Step 1: attempt text extraction from the region ──
-    clipped_text = page.get_text("text", clip=clip).strip()
-    # Collapse excessive whitespace for a fair length check
-    clipped_text_clean = re.sub(r"\s+", " ", clipped_text)
-    if len(clipped_text_clean) > 60:
-        # Rich text region (summary box, holdings table, etc.) — store as text
-        prefix = f"Fund: {fund_name}\n" if fund_name else ""
-        return Document(
-            page_content=prefix + clipped_text,
-            metadata={
-                "page_num": region.page_num,
-                "source": str(pdf_path),
-                "source_file": pdf_path.name,
-                "modality": "text",
-                "table_type": "summary_box",
-                "fund_name": fund_name,
-                "bbox": [round(region.bbox.x0, 1), round(region.bbox.y0, 1),
-                         round(region.bbox.x1, 1), round(region.bbox.y1, 1)],
-                "region_type": "summary_box",
-            },
-        )
-
-    # ── Step 2: fall back to rasterising as PNG (genuine visual chart) ──
     # Add small padding so chart borders aren't cut off
     padding = 5
     clip = fitz.Rect(
@@ -1262,6 +1229,7 @@ def _render_region_to_document(
             "num_paths": region.num_paths,
             "source": str(pdf_path),
             "modality": "image",
+            "fund_name": fund_name,
         },
     )
 

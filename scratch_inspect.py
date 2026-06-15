@@ -5,8 +5,8 @@ import asyncio
 from app.rag.extract import load_and_chunk_pdf
 
 async def main():
-    print("Running load_and_chunk_pdf...")
-    text_chunks, image_docs = await load_and_chunk_pdf()
+    pdf_path = "static/fund-factsheet-for-may-2026-5-50.pdf"
+    text_chunks, table_docs, image_docs = await load_and_chunk_pdf(pdf_path)
 
     print(f"\n{'='*70}")
     print(f"  TEXT CHUNKS: {len(text_chunks)}")
