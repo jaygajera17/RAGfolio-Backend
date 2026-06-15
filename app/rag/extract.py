@@ -64,7 +64,7 @@ EXCLUDE_BBOXES = [
 
 # ── Default paths ──
 BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_PDF_PATH = BASE_DIR / "static" / "icici-15-20.pdf"
+DEFAULT_PDF_PATH = BASE_DIR / "static" / "icici-factsheet-may-2026.pdf"
 
 # ── PDF metadata for temporal filtering ──
 # Change this string when ingesting a new month's PDF.

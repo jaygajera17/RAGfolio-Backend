@@ -1,13 +1,14 @@
-# 🌌 Multimodal RAG Pipeline
+# 🌌 RAGfolio: ICICI MF Factsheet RAG Pipeline
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white) 
 ![Qdrant](https://img.shields.io/badge/Qdrant-DB-FE346E?style=for-the-badge&logo=qdrant&logoColor=white) 
 ![Gemini](https://img.shields.io/badge/Gemini-AI-8E75B2?style=for-the-badge&logo=google&logoColor=white) 
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 
-A highly-optimized, **Multimodal Retrieval-Augmented Generation (RAG)** pipeline designed to ingest, process, and query complex PDF documents. This system goes beyond traditional text-based RAG; it visually understands document layouts, dynamically extracts charts, and retrieves both text and images to provide context-rich, highly accurate answers.
+FastAPI backend for **RAGfolio** — a multimodal RAG pipeline that ingests ICICI Prudential mutual fund factsheets and answers queries using both retrieved text chunks and rendered chart images.
 
-This project showcases an advanced, production-ready approach to Enterprise RAG, moving past naive text chunking to full semantic and visual comprehension.
+🖥️ **Frontend repo:** [RAGfolio-Frontend](https://github.com/jaygajera17/RAGfolio-Frontend)  
+🚀 **Live demo:** [ragfolio-frontend.vercel.app](https://ragfolio-frontend.vercel.app)
 
 ---
 
@@ -25,27 +26,23 @@ The pipeline is structured into two primary workflows: **Ingestion** and **Retri
 
 ---
 
-## 🧠 Key Design Decisions & Technologies
-
-### 1. Vector Database: Qdrant
-We chose **QdrantDB** for its powerful native support for complex multimodal architectures and payload filtering.
-- **Simultaneous Multimodal Queries**: Qdrant allows us to run text and image searches *in parallel* with separate scoring thresholds. This ensures that relevant images are never "crowded out" by text chunks in the top-K results.
-- **Payload Indexing**: By storing rich metadata (e.g., `modality`, `page_num`, `region_type`, `source`) directly in the vector payload and indexing these fields, Qdrant enables instantaneous filtering (e.g., searching only within "image" modalities) without performance degradation.
-
-### 2. Embedding Model: Gemini Embedding 2.0 (`models/gemini-embedding-2`)
-We utilize Google's latest embedding model to create vector representations of our data.
-- **Unified Vector Space**: Gemini 2.0 embeddings are natively multimodal. Text and images live in the exact same mathematical space. This is a game-changer: a user can type a text query, and the system seamlessly surfaces relevant images *without* requiring an intermediate, error-prone step to caption or OCR the image first.
-
-### 3. LLM: Gemini 2.5 Flash Lite (`gemini-2.5-flash-lite`)
-For synthesis and generation, the pipeline uses Gemini 2.5 Flash Lite orchestrated via LangChain.
-- **Native Vision Capabilities**: Instead of relying purely on OCR text extracted from charts, we feed the raw, high-resolution base64 images directly into the LLM alongside the retrieved text excerpts. The model literally "sees" the charts, allowing it to read exact figures, percentages, and visual trends accurately.
-- **Speed & Cost-Efficiency**: The "Flash Lite" tier provides the perfect balance of extremely low latency and high reasoning capabilities, making it ideal for snappy, real-time RAG applications.
-
-### 4. Chunking Strategy: Section-Aware & Visual Clustering
-Traditional RAG relies on naive token-splitting (e.g., "split every 500 tokens"), which inevitably destroys logical context. We implemented a custom, highly advanced chunking strategy using PyMuPDF (`fitz`):
-- **Semantic Text Chunking**: The system dynamically analyzes font sizes across the document to classify text as `page_title`, `section_header`, `sub_header`, or `body`. Text is chunked dynamically based on these logical section boundaries. A chunk only ends when a new section begins, preserving the complete thought and maintaining context.
-- **Visual Chart Detection**: Rather than blindly extracting all images, the system uses spatial clustering algorithms on PDF vector drawings. It clusters lines, shapes, and small text elements to intelligently detect entire charts or tables, filtering out decorative lines, headers, and footers. These detected regions are rendered as high-resolution PNGs.
-- **Fallback Safety**: For exceptionally long sections (> 2000 tokens), the system gracefully falls back to a recursive character split to stay within model context limits, while still retaining the parent section metadata.
+## Key engineering decisions
+ 
+### 1. Section-aware chunking over token splitting
+ 
+Standard RAG splits text every N tokens, which breaks mid-sentence and destroys context. This pipeline uses PyMuPDF to analyse font sizes across the document and classify every text block as `page_title`, `section_header`, `sub_header`, or `body`. Chunks are delimited by section boundaries — a chunk only closes when a new header appears. For sections exceeding 2,000 tokens, a `RecursiveCharacterTextSplitter` fallback is applied *within* the section, preserving the section metadata on every sub-chunk.
+ 
+### 2. Visual chart detection via spatial clustering
+ 
+Instead of extracting all embedded images (which includes logos, banners, decorative lines), the pipeline runs a union-find spatial clustering algorithm on PDF vector drawing paths. Clusters that meet minimum area and element count thresholds are flagged as chart regions and rendered to high-resolution PNGs. This separates meaningful financial charts from page decoration without any ML classifier.
+ 
+### 3. Unified multimodal vector space (Gemini Embedding 2.0)
+ 
+Text chunks and chart images share a single Qdrant collection with a `modality` field. Gemini Embedding 2.0 is natively multimodal — both modalities project into the same 3072-dimension space. A text query can therefore surface relevant charts directly without an intermediate OCR or captioning step.
+ 
+### 4. Separate per-modality retrieval thresholds
+ 
+In a shared embedding space, text-to-text cosine similarity scores (~0.65–0.75) are systematically higher than text-to-image scores (~0.32–0.47). A single unified threshold would either flood results with text and suppress images, or lower the bar enough to return noisy text matches. The solution: two parallel `query_points` calls with separate thresholds (`text: 0.5`, `image: 0.3`), merged before the LLM prompt is built.
 
 ---
 
@@ -62,7 +59,86 @@ Traditional RAG relies on naive token-splitting (e.g., "split every 500 tokens")
 - `app/rag/qdrant.py`: Interfaces with Qdrant for creating collections, indexing payloads, and parallel querying.
 - `app/rag/retrival.py`: Orchestrates the final retrieval step, combining text and images into a single prompt for the Gemini LLM.
 
-## Run
 
-Windows: .venv\Scripts\activate   
-         uvicorn app.main:app --reload 
+## Local setup
+ 
+### Prerequisites
+ 
+- Python 3.11+
+- A [Qdrant Cloud](https://cloud.qdrant.io/) cluster (free tier works)
+- A [Google AI Studio](https://aistudio.google.com/) API key with Gemini access
+- An [Auth0](https://auth0.com/) application (Single Page App type)
+
+### 1. Clone and create a virtual environment
+ 
+```bash
+git clone https://github.com/jaygajera17/RAGfolio-Backend.git
+cd RAGfolio-Backend
+python -m venv .venv
+ 
+# Windows
+.venv\Scripts\activate
+ 
+# macOS / Linux
+source .venv/bin/activate
+```
+ 
+### 2. Install dependencies
+ 
+```bash
+pip install -r requirements.txt
+```
+ 
+### 3. Configure environment variables
+ 
+Create a `.env` file in the project root:
+ 
+```env
+# Google Gemini
+GOOGLE_API_KEY=your-google-ai-studio-api-key
+ 
+# Qdrant Cloud
+QDRANT_URL=https://your-cluster.qdrant.io
+QDRANT_API_KEY=your-qdrant-api-key
+QDRANT_COLLECTION_NAME=ragfolio
+ 
+# Auth0
+AUTH0_DOMAIN=your-tenant.auth0.com
+AUTH0_CLIENT_ID=your-auth0-client-id
+AUTH0_CLIENT_SECRET=your-auth0-client-secret
+APP_BASE_URL=http://127.0.0.1:8000
+```
+ 
+| Variable | Where to find it |
+|---|---|
+| `GOOGLE_API_KEY` | [Google AI Studio](https://aistudio.google.com/) → API keys |
+| `QDRANT_URL` | Qdrant Cloud dashboard → your cluster → Endpoint |
+| `QDRANT_API_KEY` | Qdrant Cloud dashboard → your cluster → API Keys |
+| `AUTH0_DOMAIN` | Auth0 dashboard → Applications → your app → Domain |
+| `AUTH0_CLIENT_ID` | Auth0 dashboard → Applications → your app → Client ID |
+| `AUTH0_CLIENT_SECRET` | Auth0 dashboard → Applications → your app → Client Secret |
+| `APP_BASE_URL` | Must match exactly what is set in Auth0 callback URLs |
+ 
+> **Auth0 callback URLs:** In your Auth0 application settings, set **Allowed Callback URLs** to `http://127.0.0.1:8000/auth/callback` and **Allowed Logout URLs** to `http://127.0.0.1:8000`.
+
+### 4. Run the server
+ 
+```bash
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+ 
+API docs available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+ 
+### 5. Ingest the factsheet
+ 
+With the server running, trigger ingestion via curl or the `/docs` UI:
+ 
+```bash
+curl -X POST http://127.0.0.1:8000/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"pdf_path": "static/icici-fund-factsheet-for-may-2026.pdf", "month_year": "May-2026"}'
+```
+
+## Deployment
+ 
+The backend is deployed to Vercel as a serverless function. Because Vercel has a 250MB deployment size limit, PDF ingestion dependencies (PyMuPDF, etc.) are stripped from the production bundle — ingestion is intended to be run locally or in a separate worker.
