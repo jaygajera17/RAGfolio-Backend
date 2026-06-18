@@ -11,6 +11,8 @@ logger = get_logger(__name__)
 async def injest_pdf(pdf_path: str = None):
     collection = settings.DEFAULT_COLLECTION
     qdrant_svc = QdrantService(collection_name=collection)
+    if not pdf_path:
+        pdf_path = settings.PDF_PATH or "static/fund-factsheet-for-may-2026-51-97.pdf"
     text_chunk, table_docs, image_docs = await load_and_chunk_pdf(pdf_path)
 
     if not text_chunk and not table_docs and not image_docs:

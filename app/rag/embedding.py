@@ -10,11 +10,10 @@ from app.core.config import settings
 from app.core.logger import get_logger
 
 EMBEDDING_DIM = settings.EMBEDDING_DIM
-MAX_CONCURRENT = 5
+MAX_CONCURRENT = 1
 logger = get_logger(__name__)
 
 _GEMINI_EMBED_MODEL = "models/gemini-embedding-2"
-
 
 def make_document_text(title: str, text: str) -> str:
     """Format a text chunk as a retrieval document."""
@@ -52,6 +51,8 @@ class EmbeddingService:
         """
         async def _embed_one(text: str) -> List[float]:
             async with self._semaphore:
+                # Direct timeout to slow down ingestion and avoid rate limit
+                await asyncio.sleep(10.0)
                 return await self.model.aembed_query(text)
 
         vectors = await asyncio.gather(*[_embed_one(t) for t in texts])
@@ -66,6 +67,9 @@ class EmbeddingService:
     async def embed_chunks(self, chunks: List[str]):
         """Embed a list of Document chunks. Returns list of dicts ready for Qdrant upsert."""
         texts = [chunk.page_content for chunk in chunks]
+        
+        # Direct timeout to avoid rate limit error
+        await asyncio.sleep(10.0)
         vectors = await self.model.embed_documents(texts)
 
         return [
@@ -102,6 +106,9 @@ class EmbeddingService:
             Embedding vector of length EMBEDDING_DIM.
         """
         async with self._semaphore:
+            # Direct timeout
+            await asyncio.sleep(10.0)
+            
             # Decode the base64 string to raw bytes
             raw_bytes = base64.b64decode(base64_image)
 

@@ -1203,6 +1203,25 @@ def _render_region_to_document(
     if clip.is_empty:
         return None
 
+    # ── Check if the region is actually a text box (holdings, sector holdings, indicators, footnotes) ──
+    text_lower = page.get_text("text", clip=clip).lower()
+    irrelevant_keywords = [
+        "top ten holdings",
+        "top 10 holdings",
+        "top five holdings",
+        "top 5 holdings",
+        "top 5 sector holdings",
+        "quantitative indicators",
+        "base expense ratio",
+        "company/issuer",
+        "rating",
+        "% to nav",
+        "derivative exposure",
+    ]
+    if any(kw in text_lower for kw in irrelevant_keywords):
+        logger.debug(f"Page {region.page_num}: Filtering out irrelevant text/table box at bbox={region.bbox}")
+        return None
+
     # Add small padding so chart borders aren't cut off
     padding = 5
     clip = fitz.Rect(

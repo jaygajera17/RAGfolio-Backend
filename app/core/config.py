@@ -1,5 +1,6 @@
 
 import os
+from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,7 +26,8 @@ class Settings(BaseSettings):
     QDRANT_API_KEY:str
     QDRANT_HOST:str
     EMBEDDING_DIM: int = 768
-    DEFAULT_COLLECTION: str = 'test'
+    DEFAULT_COLLECTION: str = 'test2'
+    PDF_PATH: Optional[str] = None
 
     # LangSmith tracing
     LANGSMITH_TRACING: str
