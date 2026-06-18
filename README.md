@@ -102,9 +102,10 @@ Create a `.env` file in the project root:
 GOOGLE_API_KEY=your-google-ai-studio-api-key
  
 # Qdrant Cloud
-QDRANT_URL=https://your-cluster.qdrant.io
+QDRANT_HOST=https://your-cluster.qdrant.io
 QDRANT_API_KEY=your-qdrant-api-key
-QDRANT_COLLECTION_NAME=ragfolio
+DEFAULT_COLLECTION=test2
+PDF_PATH=static/fund-factsheet-for-may-2026-51-97.pdf
  
 # Auth0
 AUTH0_DOMAIN=your-tenant.auth0.com
@@ -116,15 +117,17 @@ APP_BASE_URL=http://127.0.0.1:8000
 | Variable | Where to find it |
 |---|---|
 | `GOOGLE_API_KEY` | [Google AI Studio](https://aistudio.google.com/) → API keys |
-| `QDRANT_URL` | Qdrant Cloud dashboard → your cluster → Endpoint |
+| `QDRANT_HOST` | Qdrant Cloud dashboard → your cluster → Endpoint |
 | `QDRANT_API_KEY` | Qdrant Cloud dashboard → your cluster → API Keys |
+| `DEFAULT_COLLECTION` | The Qdrant collection name to use (defaults to `test2` if not set) |
+| `PDF_PATH` | (Optional) Path to the local PDF file for ingestion (defaults to `static/fund-factsheet-for-may-2026-51-97.pdf` if not set; not used in production) |
 | `AUTH0_DOMAIN` | Auth0 dashboard → Applications → your app → Domain |
 | `AUTH0_CLIENT_ID` | Auth0 dashboard → Applications → your app → Client ID |
 | `AUTH0_CLIENT_SECRET` | Auth0 dashboard → Applications → your app → Client Secret |
 | `APP_BASE_URL` | Must match exactly what is set in Auth0 callback URLs |
  
 > **Auth0 callback URLs:** In your Auth0 application settings, set **Allowed Callback URLs** to `http://127.0.0.1:8000/auth/callback` and **Allowed Logout URLs** to `http://127.0.0.1:8000`.
-
+ 
 ### 4. Run the server
  
 ```bash
@@ -138,9 +141,8 @@ API docs available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 With the server running, trigger ingestion via curl or the `/docs` UI:
  
 ```bash
-curl -X POST http://127.0.0.1:8000/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"pdf_path": "static/icici-fund-factsheet-for-may-2026.pdf", "month_year": "May-2026"}'
+curl -X POST http://127.0.0.1:8000/api/v1/rag/ingest \
+  -H "Authorization: Bearer YOUR_AUTH0_ACCESS_TOKEN"
 ```
 
 ## Deployment
