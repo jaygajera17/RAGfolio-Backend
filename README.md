@@ -11,8 +11,11 @@ FastAPI backend for **RAGfolio** — a multimodal RAG pipeline that ingests ICIC
 🚀 **Live demo:** [ragfolio-frontend.vercel.app](https://ragfolio-frontend.vercel.app)
 
 ## Preview
+
 <img width="897" height="596" alt="image" src="https://github.com/user-attachments/assets/459012ce-5695-46aa-86e8-01cbe3e3fc33" />
-<img width="757" height="588" alt="image" src="https://github.com/user-attachments/assets/7c200872-1c33-49d0-aaa6-bea1563c806c" />
+
+- Multi modal Ability:
+<img width="2460" height="840" alt="image" src="https://github.com/user-attachments/assets/bb4bb6cf-6601-4373-8e17-5ed50123e892" />
 
 ---
 
